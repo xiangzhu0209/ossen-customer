@@ -28,9 +28,11 @@
         .badge { padding: 4px 8px; border-radius: 6px; font-size: 12px; font-weight: bold; }
         .badge-active { background: #d1fae5; color: #047857; }
         .badge-disabled { background: #fee2e2; color: #b91c1c; }
-        .action-btns { display: flex; gap: 8px; }
+        .action-btns { display: flex; gap: 8px; flex-wrap: wrap; }
         .btn-sm { padding: 6px 10px; border: none; border-radius: 4px; font-size: 12px; font-weight: bold; cursor: pointer; }
         .btn-toggle { background: #f1f5f9; color: var(--text-main); }
+        .btn-edit { background: #e0e7ff; color: #4338ca; }
+        .btn-save { background: #10b981; color: white; }
         .btn-delete { background: #fee2e2; color: #b91c1c; }
     </style>
 </head>
@@ -54,7 +56,7 @@
                 <button class="btn-submit" id="btnAddMember">建立人員帳號</button>
             </div>
             <div class="card">
-                <div class="card-title">👥 目前系統人員名單</div>
+                <div class="card-title">👥 目前系統人員名單 (可直接編輯)</div>
                 <table>
                     <thead><tr><th>姓名</th><th>登入帳號</th><th>權限</th><th>目前狀態</th><th>操作</th></tr></thead>
                     <tbody id="memberList"></tbody>
@@ -81,7 +83,6 @@
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
     
-    // 建立第二個 App 實體專門用來註冊員工，這樣老闆新增員工時自己才不會被登出
     const adminApp = initializeApp(firebaseConfig, "AdminApp");
     const adminAuth = getAuth(adminApp);
 
@@ -92,8 +93,8 @@
     onSnapshot(collection(db, "users"), (snapshot) => {
         usersData = [];
         memberList.innerHTML = "";
-        snapshot.forEach((doc) => {
-            const user = { id: doc.id, ...doc.data() };
+        snapshot.forEach((docSnap) => {
+            const user = { id: docSnap.id, ...docSnap.data() };
             usersData.push(user);
             
             const roleText = user.role === 'manager' ? '店長' : '一般人員';
@@ -104,11 +105,25 @@
 
             const tr = document.createElement('tr');
             tr.innerHTML = `
-                <td style="font-weight:bold; color:var(--primary);">${user.name}</td>
-                <td>${user.account}</td>
-                <td>${roleText}</td>
+                <td>
+                    <span class="view-mode" style="font-weight:bold; color:var(--primary);">${user.name}</span>
+                    <input type="text" class="form-input edit-mode edit-name" value="${user.name}" style="display:none; padding:4px 8px;">
+                </td>
+                <td>
+                    <span class="view-mode">${user.account}</span>
+                    <span class="edit-mode" style="display:none; color:var(--text-sub);">${user.account} (帳號不開放修改)</span>
+                </td>
+                <td>
+                    <span class="view-mode">${roleText}</span>
+                    <select class="form-input edit-mode edit-role" style="display:none; padding:4px 8px;">
+                        <option value="staff" ${user.role === 'staff' ? 'selected' : ''}>一般人員</option>
+                        <option value="manager" ${user.role === 'manager' ? 'selected' : ''}>店長</option>
+                    </select>
+                </td>
                 <td>${statusBadge}</td>
                 <td class="action-btns">
+                    <button class="btn-sm btn-edit" data-id="${user.id}">編輯</button>
+                    <button class="btn-sm btn-save edit-mode" data-id="${user.id}" style="display:none;">儲存</button>
                     <button class="btn-sm btn-toggle" data-id="${user.id}" data-status="${user.status}">${toggleBtnText}</button>
                     <button class="btn-sm btn-delete" data-id="${user.id}">刪除</button>
                 </td>
@@ -116,7 +131,42 @@
             memberList.appendChild(tr);
         });
         
-        // 綁定動態生成的按鈕事件
+        // 綁定編輯按鈕
+        document.querySelectorAll('.btn-edit').forEach(btn => {
+            btn.onclick = (e) => {
+                const tr = e.target.closest('tr');
+                tr.querySelectorAll('.view-mode').forEach(el => el.style.display = 'none');
+                tr.querySelectorAll('.edit-mode').forEach(el => el.style.display = 'inline-block');
+                e.target.style.display = 'none'; // 隱藏編輯按鈕
+            };
+        });
+
+        // 綁定儲存按鈕
+        document.querySelectorAll('.btn-save').forEach(btn => {
+            btn.onclick = async (e) => {
+                const tr = e.target.closest('tr');
+                const id = btn.dataset.id;
+                const newName = tr.querySelector('.edit-name').value.trim();
+                const newRole = tr.querySelector('.edit-role').value;
+
+                if (!newName) {
+                    alert("姓名不得為空白！");
+                    return;
+                }
+
+                try {
+                    await updateDoc(doc(db, "users", id), {
+                        name: newName,
+                        role: newRole
+                    });
+                    alert("修改成功！");
+                } catch (err) {
+                    alert("更新失敗：" + err.message);
+                }
+            };
+        });
+
+        // 綁定狀態切換按鈕
         document.querySelectorAll('.btn-toggle').forEach(btn => {
             btn.onclick = async () => {
                 const newStatus = btn.dataset.status === 'active' ? 'disabled' : 'active';
@@ -124,6 +174,7 @@
             };
         });
 
+        // 綁定刪除按鈕
         document.querySelectorAll('.btn-delete').forEach(btn => {
             btn.onclick = async () => {
                 if(confirm("確定要刪除這位人員的紀錄嗎？(建議使用暫停權限即可)")) {
@@ -145,12 +196,10 @@
         }
 
         try {
-            // 1. 在 Firebase Auth 建立帳號 (自動加上後綴以符合 Email 格式)
             const email = `${account}@osheng.tw`;
             await createUserWithEmailAndPassword(adminAuth, email, pwd);
-            await signOut(adminAuth); // 建完立刻登出副實體
+            await signOut(adminAuth); 
 
-            // 2. 將用戶資料寫入 Firestore，供前台抓取選單
             await addDoc(collection(db, "users"), {
                 name: name,
                 account: account,
